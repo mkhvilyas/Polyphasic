@@ -58,16 +58,20 @@ class SleepCycle {
       );
 }
 
+enum SleepType { core, nap }
+
 class Sleep {
   final String name;
   final TimeOfDay startTime;
   final int durationMinutes;
+  final SleepType type;
   bool isDone;
 
   Sleep({
     required this.name,
     required this.startTime,
     required this.durationMinutes,
+    required this.type,
     this.isDone = false,
   });
 
@@ -76,6 +80,7 @@ class Sleep {
         'hour': startTime.hour,
         'minute': startTime.minute,
         'durationMinutes': durationMinutes,
+        'type': type.toString(),
         'isDone': isDone,
       };
 
@@ -83,8 +88,128 @@ class Sleep {
         name: json['name'],
         startTime: TimeOfDay(hour: json['hour'], minute: json['minute']),
         durationMinutes: json['durationMinutes'],
-        isDone: json['isDone'],
+        type: SleepType.values.firstWhere(
+            (e) => e.toString() == json['type'],
+            orElse: () => SleepType.nap),
+        isDone: json['isDone'] ?? false,
       );
+}
+
+class AddSleepBlockDialog extends StatefulWidget {
+  final void Function(Sleep sleep) onAdd;
+
+  const AddSleepBlockDialog({super.key, required this.onAdd});
+
+  @override
+  State<AddSleepBlockDialog> createState() => _AddSleepBlockDialogState();
+}
+
+class _AddSleepBlockDialogState extends State<AddSleepBlockDialog> {
+  late TextEditingController _nameController;
+  late TextEditingController _durationController;
+  TimeOfDay _selectedTime = TimeOfDay.now();
+  SleepType _selectedType = SleepType.nap;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController();
+    _durationController = TextEditingController(text: '90');
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _durationController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add Sleep Block'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nameController,
+              decoration: const InputDecoration(labelText: 'Block Name'),
+            ),
+            const SizedBox(height: 16),
+            SegmentedButton<SleepType>(
+              segments: const [
+                ButtonSegment(
+                  value: SleepType.core,
+                  label: Text('Core Sleep'),
+                ),
+                ButtonSegment(
+                  value: SleepType.nap,
+                  label: Text('Nap'),
+                ),
+              ],
+              selected: {_selectedType},
+              onSelectionChanged: (Set<SleepType> selection) {
+                setState(() {
+                  _selectedType = selection.first;
+                  if (_nameController.text.isEmpty) {
+                    _nameController.text = _selectedType == SleepType.core
+                        ? 'Core Sleep'
+                        : 'Nap';
+                  }
+                });
+              },
+            ),
+            const SizedBox(height: 16),
+            ListTile(
+              title: const Text('Start Time'),
+              subtitle: Text(_selectedTime.format(context)),
+              onTap: () async {
+                final TimeOfDay? time = await showTimePicker(
+                  context: context,
+                  initialTime: _selectedTime,
+                );
+                if (time != null) {
+                  setState(() => _selectedTime = time);
+                }
+              },
+            ),
+            TextField(
+              controller: _durationController,
+              decoration: const InputDecoration(
+                labelText: 'Duration (minutes)',
+                hintText: 'Enter sleep duration',
+              ),
+              keyboardType: TextInputType.number,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            final name = _nameController.text.trim();
+            final duration = int.tryParse(_durationController.text) ?? 90;
+            
+            if (name.isNotEmpty && duration > 0) {
+              widget.onAdd(Sleep(
+                name: name,
+                startTime: _selectedTime,
+                durationMinutes: duration,
+                type: _selectedType,
+              ));
+              Navigator.pop(context);
+            }
+          },
+          child: const Text('Add'),
+        ),
+      ],
+    );
+  }
 }
 
 class PolyphasicHome extends StatefulWidget {
@@ -103,6 +228,7 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
   List<SleepCycle> savedCycles = [];
   DateTime lastResetDate = DateTime.now();
   late SharedPreferences prefs;
+  bool _isLoading = true;
 
   @override
   void initState() {
@@ -114,6 +240,7 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
     prefs = await SharedPreferences.getInstance();
     _loadData();
     _checkAndResetDailyTasks();
+    setState(() => _isLoading = false);
   }
 
   void _loadData() {
@@ -121,20 +248,18 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
     final String? activeCycleJson = prefs.getString(_activeCycleKey);
     final String? lastResetString = prefs.getString(_lastResetKey);
 
-    setState(() {
-      if (cyclesJson != null) {
-        final List<dynamic> decoded = jsonDecode(cyclesJson);
-        savedCycles = decoded.map((json) => SleepCycle.fromJson(json)).toList();
-      }
+    if (cyclesJson != null) {
+      final List<dynamic> decoded = jsonDecode(cyclesJson);
+      savedCycles = decoded.map((json) => SleepCycle.fromJson(json)).toList();
+    }
 
-      if (activeCycleJson != null) {
-        activeCycle = SleepCycle.fromJson(jsonDecode(activeCycleJson));
-      }
+    if (activeCycleJson != null) {
+      activeCycle = SleepCycle.fromJson(jsonDecode(activeCycleJson));
+    }
 
-      if (lastResetString != null) {
-        lastResetDate = DateTime.parse(lastResetString);
-      }
-    });
+    if (lastResetString != null) {
+      lastResetDate = DateTime.parse(lastResetString);
+    }
   }
 
   Future<void> _saveData() async {
@@ -169,7 +294,6 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
       builder: (context) {
         String cycleName = '';
         List<Sleep> sleeps = [];
-        int durationMinutes = 90;
 
         return StatefulBuilder(
           builder: (context, setState) {
@@ -184,39 +308,27 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
                       onChanged: (value) => cycleName = value,
                     ),
                     const SizedBox(height: 16),
-                    TextField(
-                      decoration: const InputDecoration(labelText: 'Duration (minutes)'),
-                      keyboardType: TextInputType.number,
-                      onChanged: (value) => durationMinutes = int.tryParse(value) ?? 90,
-                    ),
-                    const SizedBox(height: 16),
                     ...sleeps.map((sleep) => ListTile(
                           title: Text(sleep.name),
-                          subtitle: Text('${sleep.startTime.format(context)} - ${sleep.durationMinutes}min'),
+                          subtitle: Text(
+                              '${sleep.type.name.toUpperCase()} - ${sleep.startTime.format(context)} - ${sleep.durationMinutes}min'),
                           trailing: IconButton(
                             icon: const Icon(Icons.delete),
                             onPressed: () {
-                              setState(() {
-                                sleeps.remove(sleep);
-                              });
+                              setState(() => sleeps.remove(sleep));
                             },
                           ),
                         )),
                     ElevatedButton(
-                      onPressed: () async {
-                        final TimeOfDay? time = await showTimePicker(
+                      onPressed: () {
+                        showDialog(
                           context: context,
-                          initialTime: TimeOfDay.now(),
+                          builder: (context) => AddSleepBlockDialog(
+                            onAdd: (sleep) {
+                              setState(() => sleeps.add(sleep));
+                            },
+                          ),
                         );
-                        if (time != null) {
-                          setState(() {
-                            sleeps.add(Sleep(
-                              name: sleeps.isEmpty ? 'Core' : 'Nap ${sleeps.length}',
-                              startTime: time,
-                              durationMinutes: durationMinutes,
-                            ));
-                          });
-                        }
                       },
                       child: const Text('Add Sleep Block'),
                     ),
@@ -228,11 +340,12 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
                   onPressed: () => Navigator.pop(context),
                   child: const Text('Cancel'),
                 ),
-                TextButton(
+                ElevatedButton(
                   onPressed: () {
                     if (cycleName.isNotEmpty && sleeps.isNotEmpty) {
+                      final newCycle = SleepCycle(name: cycleName, sleeps: sleeps);
                       setState(() {
-                        savedCycles.add(SleepCycle(name: cycleName, sleeps: sleeps));
+                        savedCycles.add(newCycle);
                         _saveData();
                       });
                       Navigator.pop(context);
