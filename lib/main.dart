@@ -38,6 +38,27 @@ class PolyphasicApp extends StatelessWidget {
   }
 }
 
+class SleepCycle {
+  final String name;
+  final List<Sleep> sleeps;
+
+  SleepCycle({required this.name, required this.sleeps});
+}
+
+class Sleep {
+  final String name;
+  final TimeOfDay startTime;
+  final int durationMinutes;
+  bool isDone;
+
+  Sleep({
+    required this.name,
+    required this.startTime,
+    required this.durationMinutes,
+    this.isDone = false,
+  });
+}
+
 class PolyphasicHome extends StatefulWidget {
   const PolyphasicHome({super.key});
 
@@ -46,76 +67,185 @@ class PolyphasicHome extends StatefulWidget {
 }
 
 class _PolyphasicHomeState extends State<PolyphasicHome> {
-  final List<String> _sleepLogs = [];
+  SleepCycle? activeCycle;
+  final List<SleepCycle> savedCycles = [];
+  DateTime lastResetDate = DateTime.now();
 
-  void _logSleep() {
-    final today = DateTime.now();
-    final formattedDate = "${today.year}-${today.month.toString().padLeft(2,'0')}-${today.day.toString().padLeft(2,'0')}";
+  @override
+  void initState() {
+    super.initState();
+    _checkAndResetDailyTasks();
+  }
 
-    if (!_sleepLogs.contains(formattedDate)) {
+  void _checkAndResetDailyTasks() {
+    final now = DateTime.now();
+    if (now.day != lastResetDate.day) {
       setState(() {
-        _sleepLogs.add(formattedDate);
+        if (activeCycle != null) {
+          for (var sleep in activeCycle!.sleeps) {
+            sleep.isDone = false;
+          }
+        }
+        lastResetDate = now;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Sleep logged for today')),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Already logged for today!')),
-      );
     }
+  }
+
+  void _createNewCycle() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        String cycleName = '';
+        List<Sleep> sleeps = [];
+
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('Create Sleep Cycle'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      decoration: const InputDecoration(labelText: 'Cycle Name'),
+                      onChanged: (value) => cycleName = value,
+                    ),
+                    const SizedBox(height: 16),
+                    ...sleeps.map((sleep) => ListTile(
+                          title: Text(sleep.name),
+                          subtitle: Text('${sleep.startTime.format(context)} - ${sleep.durationMinutes}min'),
+                        )),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final TimeOfDay? time = await showTimePicker(
+                          context: context,
+                          initialTime: TimeOfDay.now(),
+                        );
+                        if (time != null) {
+                          setState(() {
+                            sleeps.add(Sleep(
+                              name: sleeps.isEmpty ? 'Core' : 'Nap ${sleeps.length}',
+                              startTime: time,
+                              durationMinutes: 90,
+                            ));
+                          });
+                        }
+                      },
+                      child: const Text('Add Sleep Block'),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    if (cycleName.isNotEmpty && sleeps.isNotEmpty) {
+                      setState(() {
+                        savedCycles.add(SleepCycle(name: cycleName, sleeps: sleeps));
+                      });
+                      Navigator.pop(context);
+                    }
+                  },
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    _checkAndResetDailyTasks();
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Polyphasic'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: _createNewCycle,
+          ),
+        ],
       ),
       body: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+        padding: const EdgeInsets.all(16),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ElevatedButton(
-              onPressed: _logSleep,
-              child: const Text('Log Today\'s Sleep'),
-            ),
-            const SizedBox(height: 24),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Sleep Logs',
+            if (activeCycle == null) ...[
+              Text(
+                'Saved Sleep Cycles',
                 style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: Colors.redAccent),
               ),
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: _sleepLogs.isEmpty
-                  ? Center(
-                      child: Text(
-                        'No logs yet',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 16),
-                      ),
-                    )
-                  : ListView.builder(
-                      itemCount: _sleepLogs.length,
-                      itemBuilder: (context, index) {
-                        final date = _sleepLogs[index];
-                        return Card(
-                          color: Colors.black87,
-                          margin: const EdgeInsets.symmetric(vertical: 6),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          child: ListTile(
-                            leading: const Icon(Icons.bedtime, color: Colors.redAccent),
-                            title: Text(
-                              date,
-                              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+              const SizedBox(height: 16),
+              Expanded(
+                child: savedCycles.isEmpty
+                    ? const Center(child: Text('No sleep cycles created yet'))
+                    : ListView.builder(
+                        itemCount: savedCycles.length,
+                        itemBuilder: (context, index) {
+                          final cycle = savedCycles[index];
+                          return Card(
+                            child: ListTile(
+                              title: Text(cycle.name),
+                              subtitle: Text('${cycle.sleeps.length} sleep blocks'),
+                              onTap: () {
+                                setState(() {
+                                  activeCycle = cycle;
+                                });
+                              },
                             ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
+                          );
+                        },
+                      ),
+              ),
+            ] else ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    activeCycle!.name,
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: Colors.redAccent),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        activeCycle = null;
+                      });
+                    },
+                    child: const Text('Change Cycle'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: activeCycle!.sleeps.length,
+                  itemBuilder: (context, index) {
+                    final sleep = activeCycle!.sleeps[index];
+                    return Card(
+                      child: CheckboxListTile(
+                        title: Text(sleep.name),
+                        subtitle: Text('${sleep.startTime.format(context)} - ${sleep.durationMinutes}min'),
+                        value: sleep.isDone,
+                        onChanged: (value) {
+                          setState(() {
+                            sleep.isDone = value ?? false;
+                          });
+                        },
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           ],
         ),
       ),
