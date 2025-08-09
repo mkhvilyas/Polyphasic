@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const PolyphasicApp());
 }
 
@@ -43,6 +46,16 @@ class SleepCycle {
   final List<Sleep> sleeps;
 
   SleepCycle({required this.name, required this.sleeps});
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'sleeps': sleeps.map((s) => s.toJson()).toList(),
+      };
+
+  factory SleepCycle.fromJson(Map<String, dynamic> json) => SleepCycle(
+        name: json['name'],
+        sleeps: (json['sleeps'] as List).map((s) => Sleep.fromJson(s)).toList(),
+      );
 }
 
 class Sleep {
@@ -57,6 +70,21 @@ class Sleep {
     required this.durationMinutes,
     this.isDone = false,
   });
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'hour': startTime.hour,
+        'minute': startTime.minute,
+        'durationMinutes': durationMinutes,
+        'isDone': isDone,
+      };
+
+  factory Sleep.fromJson(Map<String, dynamic> json) => Sleep(
+        name: json['name'],
+        startTime: TimeOfDay(hour: json['hour'], minute: json['minute']),
+        durationMinutes: json['durationMinutes'],
+        isDone: json['isDone'],
+      );
 }
 
 class PolyphasicHome extends StatefulWidget {
@@ -67,14 +95,57 @@ class PolyphasicHome extends StatefulWidget {
 }
 
 class _PolyphasicHomeState extends State<PolyphasicHome> {
+  static const String _cyclesKey = 'sleep_cycles';
+  static const String _activeCycleKey = 'active_cycle';
+  static const String _lastResetKey = 'last_reset_date';
+
   SleepCycle? activeCycle;
-  final List<SleepCycle> savedCycles = [];
+  List<SleepCycle> savedCycles = [];
   DateTime lastResetDate = DateTime.now();
+  late SharedPreferences prefs;
 
   @override
   void initState() {
     super.initState();
+    _initializePrefs();
+  }
+
+  Future<void> _initializePrefs() async {
+    prefs = await SharedPreferences.getInstance();
+    _loadData();
     _checkAndResetDailyTasks();
+  }
+
+  void _loadData() {
+    final String? cyclesJson = prefs.getString(_cyclesKey);
+    final String? activeCycleJson = prefs.getString(_activeCycleKey);
+    final String? lastResetString = prefs.getString(_lastResetKey);
+
+    setState(() {
+      if (cyclesJson != null) {
+        final List<dynamic> decoded = jsonDecode(cyclesJson);
+        savedCycles = decoded.map((json) => SleepCycle.fromJson(json)).toList();
+      }
+
+      if (activeCycleJson != null) {
+        activeCycle = SleepCycle.fromJson(jsonDecode(activeCycleJson));
+      }
+
+      if (lastResetString != null) {
+        lastResetDate = DateTime.parse(lastResetString);
+      }
+    });
+  }
+
+  Future<void> _saveData() async {
+    await prefs.setString(_cyclesKey, jsonEncode(savedCycles.map((c) => c.toJson()).toList()));
+    await prefs.setString(_lastResetKey, lastResetDate.toIso8601String());
+    
+    if (activeCycle != null) {
+      await prefs.setString(_activeCycleKey, jsonEncode(activeCycle!.toJson()));
+    } else {
+      await prefs.remove(_activeCycleKey);
+    }
   }
 
   void _checkAndResetDailyTasks() {
@@ -87,6 +158,7 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
           }
         }
         lastResetDate = now;
+        _saveData();
       });
     }
   }
@@ -97,6 +169,7 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
       builder: (context) {
         String cycleName = '';
         List<Sleep> sleeps = [];
+        int durationMinutes = 90;
 
         return StatefulBuilder(
           builder: (context, setState) {
@@ -111,9 +184,23 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
                       onChanged: (value) => cycleName = value,
                     ),
                     const SizedBox(height: 16),
+                    TextField(
+                      decoration: const InputDecoration(labelText: 'Duration (minutes)'),
+                      keyboardType: TextInputType.number,
+                      onChanged: (value) => durationMinutes = int.tryParse(value) ?? 90,
+                    ),
+                    const SizedBox(height: 16),
                     ...sleeps.map((sleep) => ListTile(
                           title: Text(sleep.name),
                           subtitle: Text('${sleep.startTime.format(context)} - ${sleep.durationMinutes}min'),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete),
+                            onPressed: () {
+                              setState(() {
+                                sleeps.remove(sleep);
+                              });
+                            },
+                          ),
                         )),
                     ElevatedButton(
                       onPressed: () async {
@@ -126,7 +213,7 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
                             sleeps.add(Sleep(
                               name: sleeps.isEmpty ? 'Core' : 'Nap ${sleeps.length}',
                               startTime: time,
-                              durationMinutes: 90,
+                              durationMinutes: durationMinutes,
                             ));
                           });
                         }
@@ -146,6 +233,7 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
                     if (cycleName.isNotEmpty && sleeps.isNotEmpty) {
                       setState(() {
                         savedCycles.add(SleepCycle(name: cycleName, sleeps: sleeps));
+                        _saveData();
                       });
                       Navigator.pop(context);
                     }
@@ -162,8 +250,6 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
 
   @override
   Widget build(BuildContext context) {
-    _checkAndResetDailyTasks();
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Polyphasic'),
@@ -192,15 +278,31 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
                         itemCount: savedCycles.length,
                         itemBuilder: (context, index) {
                           final cycle = savedCycles[index];
-                          return Card(
-                            child: ListTile(
-                              title: Text(cycle.name),
-                              subtitle: Text('${cycle.sleeps.length} sleep blocks'),
-                              onTap: () {
-                                setState(() {
-                                  activeCycle = cycle;
-                                });
-                              },
+                          return Dismissible(
+                            key: Key(cycle.name),
+                            background: Container(
+                              color: Colors.red,
+                              alignment: Alignment.centerRight,
+                              padding: const EdgeInsets.only(right: 16),
+                              child: const Icon(Icons.delete, color: Colors.white),
+                            ),
+                            onDismissed: (direction) {
+                              setState(() {
+                                savedCycles.removeAt(index);
+                                _saveData();
+                              });
+                            },
+                            child: Card(
+                              child: ListTile(
+                                title: Text(cycle.name),
+                                subtitle: Text('${cycle.sleeps.length} sleep blocks'),
+                                onTap: () {
+                                  setState(() {
+                                    activeCycle = cycle;
+                                    _saveData();
+                                  });
+                                },
+                              ),
                             ),
                           );
                         },
@@ -218,6 +320,7 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
                     onPressed: () {
                       setState(() {
                         activeCycle = null;
+                        _saveData();
                       });
                     },
                     child: const Text('Change Cycle'),
@@ -238,6 +341,7 @@ class _PolyphasicHomeState extends State<PolyphasicHome> {
                         onChanged: (value) {
                           setState(() {
                             sleep.isDone = value ?? false;
+                            _saveData();
                           });
                         },
                       ),
